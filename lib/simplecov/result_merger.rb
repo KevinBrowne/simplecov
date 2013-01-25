@@ -6,42 +6,38 @@
 module SimpleCov::ResultMerger
   class << self
     # The path to the .resultset.json cache file
-    def resultset_path
-      File.join(SimpleCov.coverage_path, '.resultset.json')
+    def resultset_path(command_name)
+      File.join(SimpleCov.coverage_path, ".#{command_name}.resultset.json")
     end
 
     # Loads the cached resultset from YAML and returns it as a Hash
-    def resultset
-      if stored_data
-        SimpleCov::JSON.parse(stored_data)
+    def resultset(command_name)
+      if (stored = stored_data(command_name))
+        SimpleCov::JSON.parse(stored)
       else
         {}
       end
     end
 
     # Returns the contents of the resultset cache as a string or if the file is missing or empty nil
-    def stored_data
-      if File.exist?(resultset_path) and stored_data = File.read(resultset_path) and stored_data.length >= 2
-        stored_data
+    def stored_data(command_name)
+      stored = resultset_path(command_name)
+      if File.exist?(stored) and data = File.read(stored) and data.length >= 2
+        data
       else
         nil
       end
     end
 
-    # Gets the resultset hash and re-creates all included instances
-    # of SimpleCov::Result from that.
-    # All results that are above the SimpleCov.merge_timeout will be
-    # dropped. Returns an array of SimpleCov::Result items.
-    def results
-      results = []
-      resultset.each do |command_name, data|
-        result = SimpleCov::Result.from_hash(command_name => data)
-        # Only add result if the timeout is above the configured threshold
-        if (Time.now - result.created_at) < SimpleCov.merge_timeout
-          results << result
-        end
-      end
-      results
+    def all_results
+      Dir.glob(File.join(SimpleCov.coverage_path, ".*.resultset.json")).map { |file|
+        File.read(file)
+      }.reject { |data|
+        data.length < 2
+      }.map { |data|
+        result = SimpleCov::Result.from_hash(SimpleCov::JSON.parse(data))
+        result if ( Time.now - result.created_at ) < SimpleCov.merge_timeout
+      }.compact
     end
 
     #
@@ -50,25 +46,24 @@ module SimpleCov::ResultMerger
     # for the result consisting of a join on all source result's names
     #
     def merged_result
-      merged = {}
-      results.each do |result|
-        merged = result.original_result.merge_resultset(merged)
-      end
-      result = SimpleCov::Result.new(merged)
+      result_set = all_results
+      merge_set = result_set.reduce({}) { |merged, result| result.original_result.merge_resultset(merged) }
+      result = SimpleCov::Result.new(merge_set)
       # Specify the command name
-      result.command_name = results.map(&:command_name).sort.join(", ")
+      result.command_name = result_set.map(&:command_name).sort.join(", ")
       result
     end
 
     # Saves the given SimpleCov::Result in the resultset cache
     def store_result(result)
-      new_set = resultset
       command_name, data = result.to_hash.first
+      new_set = resultset(command_name)
       new_set[command_name] = data
-      File.open(resultset_path, "w+") do |f|
+      File.open(resultset_path(command_name), "w+") do |f|
         f.puts SimpleCov::JSON.dump(new_set)
       end
       true
     end
+
   end
 end
